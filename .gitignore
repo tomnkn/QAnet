@@ -102,14 +102,6 @@ ENV/
 
 .idea/
 .vscode/
-data/
-_data/
-tmp/
-log/
-model/
-_model/
-_log/
-mini_data.zip
 
 # Instructor-only grading materials
 bugs.md
