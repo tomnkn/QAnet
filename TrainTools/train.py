@@ -104,7 +104,7 @@ def train(
     os.makedirs(save_dir, exist_ok=True)
 
     # Internal namespace required by QANet.__init__ and data utilities
-    args = argparse.Namespace({k: v for k, v in locals().items()})
+    args = argparse.Namespace(**{k: v for k, v in locals().items()})
 
     with open(os.path.join(save_dir, "run_config.json"), "w") as f:
         json.dump(vars(args), f, indent=2)
@@ -131,7 +131,7 @@ def train(
     # Validate and select DL components from registries
     if optimizer_name not in optimizers:
         raise ValueError(f"Unknown optimizer '{optimizer_name}'. Available: {list(optimizers.keys())}")
-    if scheduler_name not in schedulers:
+    if scheduler_name != "none" and scheduler_name not in schedulers:
         raise ValueError(f"Unknown scheduler '{scheduler_name}'. Available: {list(schedulers.keys())}")
     if loss_name not in losses:
         raise ValueError(f"Unknown loss '{loss_name}'. Available: {list(losses.keys())}")
@@ -140,7 +140,10 @@ def train(
 
     params    = (p for p in model.parameters() if p.requires_grad)
     optimizer = optimizers[optimizer_name](params, args)
-    scheduler = schedulers[scheduler_name](optimizer, args)
+    if scheduler_name == 'none':
+      scheduler = None
+    else:
+      scheduler = schedulers[scheduler_name](optimizer, args)
     loss_fn   = losses[loss_name]
 
     best_f1  = 0.0
@@ -173,7 +176,7 @@ def train(
         )
         print("TEST        loss {loss:8f}  F1 {f1:8f}  EM {exact_match:8f}\n".format(**dv_metrics))
 
-        current_lr = scheduler.get_last_lr()
+        current_lr = scheduler.get_last_lr() if scheduler is not None else [optimizer.param_groups[0]["lr"]]
         print("Learning rate:", current_lr)
 
         history.append({

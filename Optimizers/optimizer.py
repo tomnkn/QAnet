@@ -5,15 +5,16 @@ from Optimizers.sgd_momentum import SGDMomentum
 
 # ── Optimizer factories ──────────────────────────────────────────────────────
 #
-# NOTE: `adam` sets lr=1.0 because its learning rate is entirely controlled by
-# the paired `warmup_lambda` scheduler (which outputs the actual lr values).
-# `sgd` and `sgd_momentum` use args.learning_rate directly and should be
-# paired with `cosine` or `step` schedulers.
+# NOTE: All optimizers use args.learning_rate as base_lr.
+# When paired with a scheduler:
+#   - `cosine` and `step` schedulers: work with any optimizer
+#   - `lambda` scheduler: multiplies base_lr by warmup_lambda(t)
+#     For QANet warmup, use with learning_rate=0.001 and warmup_lambda provides 0→1 factor
 
 def adam(params, args):
     return Adam(
         params=params,
-        lr=1.0,
+        lr=args.learning_rate,
         betas=(args.beta1, args.beta2),
         eps=getattr(args, "eps", 1e-7),
         weight_decay=args.weight_decay,

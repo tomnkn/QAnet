@@ -104,8 +104,8 @@ def run_eval(model, dataset, eval_file, num_batches, batch_size,
         loss = loss_fn(p1, p2, y1, y2)
         losses.append(float(loss.item()))
 
-        yp1 = torch.argmax(p1, dim=0)
-        yp2 = torch.argmax(p2, dim=0)
+        yp1 = torch.argmax(p1, dim=1)
+        yp2 = torch.argmax(p2, dim=1)
         yps = torch.stack([yp1, yp2], dim=1)
         ymin, _ = torch.min(yps, dim=1)
         ymax, _ = torch.max(yps, dim=1)

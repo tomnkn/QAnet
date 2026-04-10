@@ -34,8 +34,8 @@ class LayerNorm(nn.Module):
         n = len(self.normalized_shape)
         dims = tuple(range(-n, 0))  # e.g. (-2, -1) for a 2-D normalized_shape
 
-        mean = x.mean(dim=dims, keepdim=False)
-        var = x.var(dim=dims, keepdim=False, unbiased=False)
+        mean = x.mean(dim=dims, keepdim=True)
+        var = x.var(dim=dims, keepdim=True, unbiased=False)
 
         x_norm = (x - mean) / torch.sqrt(var + self.eps)
-        return x_norm * self.bias + self.weight
+        return x_norm * self.weight + self.bias

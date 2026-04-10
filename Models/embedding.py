@@ -16,7 +16,7 @@ class Highway(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: [B, C, L] -> [B, L, C]
-        x = x.transpose(0, 2)
+        x = x.transpose(1, 2)
         for i in range(self.n):
             gate = torch.sigmoid(self.gate[i](x))
             nonlinear = self.act(self.linear[i](x))
@@ -36,7 +36,7 @@ class Embedding(nn.Module):
     def forward(self, ch_emb: torch.Tensor, wd_emb: torch.Tensor) -> torch.Tensor:
         # ch_emb: [B, L, char_len, d_char]
         # wd_emb: [B, L, d_word]
-        ch_emb = ch_emb.permute(0, 2, 1, 3)  # [B, d_char, L, char_len]
+        ch_emb = ch_emb.permute(0, 3, 1, 2)  # [B, d_char, L, char_len]
         ch_emb = self.drop_char(ch_emb)
         ch_emb = self.conv2d(ch_emb)
         ch_emb = self.act(ch_emb)

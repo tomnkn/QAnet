@@ -1,3 +1,5 @@
+import math
+
 from Schedulers.cosine_scheduler import CosineAnnealingLR
 from Schedulers.lambda_scheduler import LambdaLR
 from Schedulers.step_scheduler import StepLR
@@ -22,10 +24,34 @@ def step_scheduler(optimizer, args):
     )
 
 
-def lambda_scheduler(optimizer, args):
-    """LambdaLR with a constant factor of 1.0 — learning rate stays fixed."""
-    return LambdaLR(optimizer, lr_lambda=lambda _: 1.0)
+def warmup_lambda(t):
+    """Inverse exponential warmup from 0.0 to 1.0 in first 1000 steps, then constant.
+    
+    From QANet paper (https://arxiv.org/pdf/1804.09541):
+    - Warmup: inverse exponential increase from 0.0 to 0.001 in the first 1000 steps
+    - After 1000 steps: maintain constant learning rate
+    
+    When paired with an optimizer with base_lr=0.001, this produces:
+    - LR(0) = 0.001 * 0 ≈ 0.0
+    - LR(1000) ≈ 0.001 * 1.0 = 0.001
+    - LR(>1000) = 0.001 * 1.0 = 0.001
+    """
+    if t < 1000:
+        # Inverse exponential approach: 1 - exp(-t/tau)
+        # tau ≈ 250 ensures ~99% saturation by t=1000
+        tau = 250.0
+        return 1.0 - math.exp(-t / tau)
+    else:
+        # Constant learning rate for remainder of training
+        return 1.0
 
+
+def lambda_scheduler(optimizer, args):
+    """LambdaLR with inverse exponential warmup (from QANet paper).
+    
+    Requires: optimizer must have base_lr=0.001 for correct behavior.
+    """
+    return LambdaLR(optimizer, lr_lambda=warmup_lambda)
 
 # ── Registry ─────────────────────────────────────────────────────────────────
 

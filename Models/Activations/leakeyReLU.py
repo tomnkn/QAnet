@@ -16,4 +16,4 @@ class LeakyReLU(nn.Module):
         self.negative_slope = negative_slope
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.where(x < 0, x, self.negative_slope * x)
+        return torch.where(x >= 0, x, self.negative_slope * x)

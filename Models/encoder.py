@@ -29,7 +29,7 @@ class PosEncoder(nn.Module):
         freqs = torch.tensor(
             [10000 ** (-i / d_model) if i % 2 == 0 else -10000 ** ((1 - i) / d_model) for i in range(d_model)],
             dtype=torch.float32
-        ).unsqueeze(0)  # [C, 1]
+        ).unsqueeze(1)  # [C, 1]
         phases = torch.tensor(
             [0.0 if i % 2 == 0 else math.pi / 2 for i in range(d_model)],
             dtype=torch.float32
@@ -75,7 +75,7 @@ class MultiHeadAttention(nn.Module):
             mask = mask.bool()
         attn_mask = mask.unsqueeze(1).expand(-1, length, -1).repeat(self.num_heads, 1, 1)  # [B*h, L, L]
 
-        attn = torch.bmm(q, k.transpose(1, 2))
+        attn = torch.bmm(q, k.transpose(1, 2)) * self.scale
         attn = mask_logits(attn, attn_mask)
         attn = F.softmax(attn, dim=2)
         attn = self.drop(attn)
@@ -113,15 +113,15 @@ class EncoderBlock(nn.Module):
 
         for i, conv in enumerate(self.convs):
             out = conv(out)
+            out = self.norms[i](out)
             out = self.act(out)
             out = out + res
             if (i + 1) % 2 == 0:
                 out = self.conv_drops[i](out)
-            res = out
-            out = self.norms[i + 1](out)
+
 
         out = self.self_att(out, mask)
-        out = res
+        out = out + res
         out = self.drop(out)
 
         res = out

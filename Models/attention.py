@@ -35,7 +35,7 @@ class CQAttention(nn.Module):
 
         S1 = F.softmax(mask_logits(S, qmask), dim=2)
         S2 = F.softmax(mask_logits(S, cmask), dim=1)
-        A = torch.bmm(Q, S1)
+        A = torch.bmm(S1, Q)
         B = torch.bmm(torch.bmm(S1, S2.transpose(1, 2)), C)
 
         out = torch.cat([C, A, C * A, C * B], dim=2)  # [B, Lc, 4C]

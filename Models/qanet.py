@@ -62,7 +62,7 @@ class QANet(nn.Module):
         cmask = (Cwid == 0)  # True means PAD
         qmask = (Qwid == 0)
 
-        Cw, Cc = self.char_emb(Cwid), self.word_emb(Ccid)
+        Cw, Cc = self.word_emb(Cwid), self.char_emb(Ccid)
         Qw, Qc = self.word_emb(Qwid), self.char_emb(Qcid)
 
         C, Q = self.emb(Cc, Cw), self.emb(Qc, Qw)
@@ -72,7 +72,7 @@ class QANet(nn.Module):
         Ce = self.c_emb_enc(C, cmask)
         Qe = self.q_emb_enc(Q, qmask)
 
-        X = self.cq_att(Ce, Qe, qmask, cmask)
+        X = self.cq_att(Ce, Qe, cmask, qmask)
 
         M1 = self.cq_resizer(X)
         for enc in self.model_enc_blks:
