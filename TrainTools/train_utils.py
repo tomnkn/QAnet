@@ -20,11 +20,25 @@ def _global_grad_norm(parameters) -> float:
     return total_sq ** 0.5
 
 
+def _named_grad_norm(named_parameters, include_name_fn) -> float:
+    """Compute L2 norm over gradients of selected parameters by name."""
+    total_sq = 0.0
+    for name, p in named_parameters:
+        if not include_name_fn(name):
+            continue
+        if p.grad is None:
+            continue
+        grad = p.grad.detach()
+        total_sq += float(torch.sum(grad * grad).item())
+    return total_sq ** 0.5
+
+
 def train_single_epoch(model, optimizer, scheduler, data_iter,
                        steps, grad_clip, loss_fn, device,
                        global_step: int = 0,
                        log_every_steps: int = 10,
-                       track_cq_stats: bool = True):
+                       track_cq_stats: bool = True,
+                       track_conv_stats: bool = True):
     """
     Run one block of `steps` training iterations consuming from `data_iter`.
     Returns
@@ -52,6 +66,12 @@ def train_single_epoch(model, optimizer, scheduler, data_iter,
 
         loss.backward()
         grad_norm_before = _global_grad_norm(model.parameters())
+        conv_grad_norm = None
+        if track_conv_stats:
+            conv_grad_norm = _named_grad_norm(
+                model.named_parameters(),
+                lambda n: ("depthwise_conv" in n) or ("pointwise_conv" in n),
+            )
 
         cq_weight_var = None
         cq_grad_norm = None
@@ -88,6 +108,7 @@ def train_single_epoch(model, optimizer, scheduler, data_iter,
                 "loss": float(loss.item()),
                 "lr": float(current_lr),
                 "grad_norm_before_clip": grad_norm_before,
+                "conv_grad_norm": conv_grad_norm,
                 "grad_norm_after_clip": grad_norm_after,
                 "cq_weight_var": cq_weight_var,
                 "cq_grad_norm": cq_grad_norm,

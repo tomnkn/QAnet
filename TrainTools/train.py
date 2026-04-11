@@ -50,6 +50,7 @@ def train(
     log_every_steps:    int   = 10,
     save_step_metrics:  bool  = True,
     track_cq_stats:     bool  = True,
+    track_conv_stats:   bool  = True,
     step_metrics_file:  str   = "",
 
     # ── DL technique selection (string registry keys) ─────────────────────────
@@ -166,6 +167,7 @@ def train(
             global_step=step0,
             log_every_steps=log_every_steps,
             track_cq_stats=track_cq_stats,
+            track_conv_stats=track_conv_stats,
         )
         step_metrics_all.extend(block_step_metrics)
 
