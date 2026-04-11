@@ -2,11 +2,11 @@
 
 ## Executive Summary
 
-I've identified **16 critical errors** in your QANet implementation across optimization, initialization, scheduling, normalization, and architectural components. Two of these are **CRITICAL SEVERITY** (will prevent training from working at all), ten are **HIGH SEVERITY** (will cause training instability and poor generalization), two are MEDIUM, and two are LOW priority.
+I've identified **17 critical errors** in your QANet implementation across optimization, initialization, scheduling, normalization, architectural components, and evaluation compatibility. Two of these are **CRITICAL SEVERITY** (will prevent training from working at all), eleven are **HIGH SEVERITY** (will cause training instability, evaluation failures, or poor generalization), two are MEDIUM, and two are LOW priority.
 
 ---
 
-## The 16 Errors (Priority Order)
+## The 17 Errors (Priority Order)
 
 ### 🚨 CRITICAL ERRORS
 
@@ -139,6 +139,15 @@ I've identified **16 critical errors** in your QANet implementation across optim
   - With fix: Final LR = learning_rate × warmup_factor = 0.001 × (0→1) ✅
   - Without fix, Adam + lambda scheduler combo produces immediate training divergence
   - Violates QANet paper specification
+
+  #### **Error 17: Evaluation Checkpoint Loading Fails on PyTorch 2.6**
+  - **File**: `EvaluateTools/evaluate.py`, line 118
+  - **Problem**: `torch.load` now defaults to `weights_only=True` in PyTorch 2.6
+  - **Failure**: Checkpoints trained with lambda scheduler include `warmup_lambda` in serialized scheduler state, causing:
+    - `UnpicklingError: Weights only load failed`
+    - `Unsupported global: Schedulers.scheduler.warmup_lambda`
+  - **Fix**: Load trusted local checkpoints with `weights_only=False`
+  - **Impact**: Experiment evaluation crashes even when training succeeded
 
 ---
 
@@ -609,6 +618,7 @@ Y2 = torch.einsum('c,bcl->bl', self.w2, X2)
 12. **Fix Error 14** (Pointer matmul) — correct matrix multiplication dimensions
 13. **Fix Error 15** (Lambda scheduler pickling) — use named function instead of lambda
 14. **Fix Error 16** (Lambda scheduler warmup) — implement QANet paper warmup scheme + use args.learning_rate in Adam
+15. **Fix Error 17** (PyTorch 2.6 evaluation loading) — set `weights_only=False` for trusted local checkpoints
 
 ### Phase 3: MEDIUM Priority
 7. **Fix Error 4** (Cosine scheduler) — correct learning rate schedule
@@ -665,6 +675,7 @@ After applying all fixes, verify:
 | 15 | `Schedulers/scheduler.py` | 24 | Replace lambda with named function |
 | 16 | `Optimizers/optimizer.py` | 14 | `lr=1.0` → `lr=args.learning_rate` |
 | 16 | `Schedulers/scheduler.py` | 25-31 | Replace `constant_lambda` with `warmup_lambda` |
+| 17 | `EvaluateTools/evaluate.py` | 118 | `torch.load(..., weights_only=False)` for trusted checkpoints |
 
 
 ---

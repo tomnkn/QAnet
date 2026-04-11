@@ -115,7 +115,11 @@ def evaluate(
     dev_dataset = SQuADDataset(dev_npz)
 
     ckpt_path = os.path.join(save_dir, ckpt_name)
-    ckpt = torch.load(ckpt_path, map_location=DEVICE)
+    # PyTorch 2.6 defaults torch.load(..., weights_only=True), which rejects
+    # scheduler lambda objects serialized in our training checkpoints.
+    # These checkpoints are locally produced by this project, so loading with
+    # weights_only=False is expected here.
+    ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
     model.load_state_dict(ckpt["model"])
 
     metrics, ans = run_eval(
