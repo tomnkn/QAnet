@@ -20,7 +20,7 @@ from Optimizers import optimizers
 from Schedulers import schedulers
 from Tools import set_seed
 from EvaluateTools.eval_utils import run_eval
-from TrainTools.train_utils import train_single_epoch, save_checkpoint
+from TrainTools.train_utils import ExponentialMovingAverage, train_single_epoch, save_checkpoint
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -48,6 +48,9 @@ def train(
     grad_clip:          float = 5.0,
     early_stop:         int   = 10,
     log_every_steps:    int   = 10,
+    accumulate_grad_steps: int = 1,
+    use_ema:            bool  = True,
+    ema_decay:          float = 0.999,
     save_step_metrics:  bool  = True,
     track_cq_stats:     bool  = True,
     track_conv_stats:   bool  = True,
@@ -151,6 +154,7 @@ def train(
     else:
       scheduler = schedulers[scheduler_name](optimizer, args)
     loss_fn   = losses[loss_name]
+    ema = ExponentialMovingAverage(model, decay=ema_decay) if use_ema else None
 
     best_f1  = 0.0
     best_em  = 0.0
@@ -168,59 +172,69 @@ def train(
             log_every_steps=log_every_steps,
             track_cq_stats=track_cq_stats,
             track_conv_stats=track_conv_stats,
+            accumulate_grad_steps=accumulate_grad_steps,
+            ema=ema,
         )
         step_metrics_all.extend(block_step_metrics)
 
-        tr_metrics, _ = run_eval(
-            model, train_dataset, train_eval,
-            num_batches=val_num_batches, batch_size=batch_size,
-            use_random_batches=True,
-            device=DEVICE, loss_fn=loss_fn,
-        )
-        print("VALID(train) loss {loss:8f}  F1 {f1:8f}  EM {exact_match:8f}\n".format(**tr_metrics))
+        if ema is not None:
+            ema.apply_shadow(model)
 
-        dv_metrics, ans = run_eval(
-            model, dev_dataset, dev_eval,
-            num_batches=test_num_batches, batch_size=batch_size,
-            use_random_batches=False,
-            device=DEVICE, loss_fn=loss_fn,
-        )
-        print("TEST        loss {loss:8f}  F1 {f1:8f}  EM {exact_match:8f}\n".format(**dv_metrics))
+        try:
+            tr_metrics, _ = run_eval(
+                model, train_dataset, train_eval,
+                num_batches=val_num_batches, batch_size=batch_size,
+                use_random_batches=True,
+                device=DEVICE, loss_fn=loss_fn,
+            )
+            print("VALID(train) loss {loss:8f}  F1 {f1:8f}  EM {exact_match:8f}\n".format(**tr_metrics))
 
-        current_lr = scheduler.get_last_lr() if scheduler is not None else [optimizer.param_groups[0]["lr"]]
-        print("Learning rate:", current_lr)
+            dv_metrics, ans = run_eval(
+                model, dev_dataset, dev_eval,
+                num_batches=test_num_batches, batch_size=batch_size,
+                use_random_batches=False,
+                device=DEVICE, loss_fn=loss_fn,
+            )
+            print("TEST        loss {loss:8f}  F1 {f1:8f}  EM {exact_match:8f}\n".format(**dv_metrics))
 
-        history.append({
-            "step":       step0 + steps_this_block,
-            "train_loss": train_loss,
-            "train_f1":   tr_metrics["f1"],
-            "train_em":   tr_metrics["exact_match"],
-            "dev_loss":   dv_metrics["loss"],
-            "dev_f1":     dv_metrics["f1"],
-            "dev_em":     dv_metrics["exact_match"],
-            "lr":         current_lr[0] if current_lr else None,
-        })
+            current_lr = scheduler.get_last_lr() if scheduler is not None else [optimizer.param_groups[0]["lr"]]
+            print("Learning rate:", current_lr)
 
-        dev_f1 = dv_metrics["f1"]
-        dev_em = dv_metrics["exact_match"]
+            history.append({
+                "step":       step0 + steps_this_block,
+                "train_loss": train_loss,
+                "train_f1":   tr_metrics["f1"],
+                "train_em":   tr_metrics["exact_match"],
+                "dev_loss":   dv_metrics["loss"],
+                "dev_f1":     dv_metrics["f1"],
+                "dev_em":     dv_metrics["exact_match"],
+                "lr":         current_lr[0] if current_lr else None,
+            })
 
-        if dev_f1 < best_f1 and dev_em < best_em:
-            patience += 1
-            if patience > early_stop:
-                print("Early stopping triggered.")
-                break
-        else:
-            patience = 0
-            best_f1  = max(best_f1, dev_f1)
-            best_em  = max(best_em, dev_em)
+            dev_f1 = dv_metrics["f1"]
+            dev_em = dv_metrics["exact_match"]
 
-        save_checkpoint(
-            save_dir, ckpt_name, model, optimizer, scheduler,
-            step0 + steps_this_block, best_f1, best_em, vars(args),
-        )
+            if dev_f1 < best_f1 and dev_em < best_em:
+                patience += 1
+                if patience > early_stop:
+                    print("Early stopping triggered.")
+                    break
+            else:
+                patience = 0
+                best_f1  = max(best_f1, dev_f1)
+                best_em  = max(best_em, dev_em)
 
-        with open(os.path.join(log_dir, "answers.json"), "w") as f:
-            json.dump(ans, f)
+            save_checkpoint(
+                save_dir, ckpt_name, model, optimizer, scheduler,
+                step0 + steps_this_block, best_f1, best_em, vars(args),
+                ema_state=ema.state_dict() if ema is not None else None,
+            )
+
+            with open(os.path.join(log_dir, "answers.json"), "w") as f:
+                json.dump(ans, f)
+        finally:
+            if ema is not None:
+                ema.restore(model)
 
     step_metrics_path = ""
     if save_step_metrics:

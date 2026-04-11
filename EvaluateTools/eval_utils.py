@@ -58,6 +58,8 @@ def squad_evaluate(eval_file, answer_dict):
         ground_truths = eval_file[key]["answers"]
         exact_match += metric_max_over_ground_truths(exact_match_score, pred, ground_truths)
         f1 += metric_max_over_ground_truths(f1_score, pred, ground_truths)
+    if total == 0.0:
+        return {"exact_match": 0.0, "f1": 0.0}
     return {"exact_match": 100.0 * exact_match / total, "f1": 100.0 * f1 / total}
 
 
@@ -80,9 +82,38 @@ def convert_tokens(eval_file, qa_id, pp1, pp2):
     return answer_dict, remapped_dict
 
 
+def decode_best_spans(p1: torch.Tensor, p2: torch.Tensor, max_answer_len: int = 30):
+    """Jointly decode best valid span by maximizing p(start) + p(end).
+
+    p1 and p2 are log-probabilities with shape [B, L].
+    Constraints:
+      - start <= end
+      - (end - start + 1) <= max_answer_len
+    """
+    if p1.ndim != 2 or p2.ndim != 2:
+        raise ValueError("p1 and p2 must have shape [B, L]")
+    if p1.shape != p2.shape:
+        raise ValueError("p1 and p2 must have the same shape")
+    if max_answer_len < 1:
+        raise ValueError("max_answer_len must be >= 1")
+
+    batch_size, length = p1.shape
+
+    scores = p1.unsqueeze(2) + p2.unsqueeze(1)  # [B, L, L]
+
+    valid = torch.ones(length, length, dtype=torch.bool, device=p1.device)
+    valid = torch.triu(valid, diagonal=0) & torch.tril(valid, diagonal=max_answer_len - 1)
+    scores = scores.masked_fill(~valid.unsqueeze(0), -1e30)
+
+    flat_idx = scores.view(batch_size, -1).argmax(dim=1)
+    ystart = flat_idx // length
+    yend = flat_idx % length
+    return ystart, yend
+
+
 @torch.no_grad()
 def run_eval(model, dataset, eval_file, num_batches, batch_size,
-             use_random_batches, device, loss_fn=qa_nll_loss):
+             use_random_batches, device, loss_fn=qa_nll_loss, max_answer_len: int = 30):
     loader = make_loader(dataset, batch_size, shuffle=use_random_batches)
     # num_batches=-1 means evaluate the full dataset
     batch_limit = None if num_batches < 0 else num_batches
@@ -104,11 +135,7 @@ def run_eval(model, dataset, eval_file, num_batches, batch_size,
         loss = loss_fn(p1, p2, y1, y2)
         losses.append(float(loss.item()))
 
-        yp1 = torch.argmax(p1, dim=1)
-        yp2 = torch.argmax(p2, dim=1)
-        yps = torch.stack([yp1, yp2], dim=1)
-        ymin, _ = torch.min(yps, dim=1)
-        ymax, _ = torch.max(yps, dim=1)
+        ymin, ymax = decode_best_spans(p1, p2, max_answer_len=max_answer_len)
 
         answer_dict_, _ = convert_tokens(eval_file, ids.tolist(), ymin.tolist(), ymax.tolist())
         answer_dict.update(answer_dict_)

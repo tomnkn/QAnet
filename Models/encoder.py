@@ -67,13 +67,15 @@ class MultiHeadAttention(nn.Module):
         k = self.k_linear(x).view(batch_size, length, self.num_heads, self.d_k)
         v = self.v_linear(x).view(batch_size, length, self.num_heads, self.d_k)
 
-        q = q.permute(2, 0, 1, 3).contiguous().view(batch_size * self.num_heads, length, self.d_k)
-        k = k.permute(2, 0, 1, 3).contiguous().view(batch_size * self.num_heads, length, self.d_k)
-        v = v.permute(2, 0, 1, 3).contiguous().view(batch_size * self.num_heads, length, self.d_k)
+        # Pack heads in batch-major order: [B, H, L, d_k] -> [B*H, L, d_k].
+        q = q.permute(0, 2, 1, 3).contiguous().view(batch_size * self.num_heads, length, self.d_k)
+        k = k.permute(0, 2, 1, 3).contiguous().view(batch_size * self.num_heads, length, self.d_k)
+        v = v.permute(0, 2, 1, 3).contiguous().view(batch_size * self.num_heads, length, self.d_k)
 
         if mask.dtype != torch.bool:
             mask = mask.bool()
-        attn_mask = mask.unsqueeze(1).expand(-1, length, -1).repeat(self.num_heads, 1, 1)  # [B*h, L, L]
+        attn_mask = mask.unsqueeze(1).expand(-1, length, -1)
+        attn_mask = attn_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1).reshape(batch_size * self.num_heads, length, length)  # [B*h, L, L]
 
         attn = torch.bmm(q, k.transpose(1, 2)) * self.scale
         attn = mask_logits(attn, attn_mask)
@@ -82,7 +84,7 @@ class MultiHeadAttention(nn.Module):
 
         out = torch.bmm(attn, v)  # [B*h, L, d_k]
         out = out.view(batch_size, self.num_heads, length, self.d_k)
-        out = out.permute(1, 2, 0, 3).contiguous().view(batch_size, length, self.d_model)
+        out = out.permute(0, 2, 1, 3).contiguous().view(batch_size, length, self.d_model)
         out = self.fc(out)
         out = self.drop(out)
         return out.transpose(1, 2)  # [B, C, L]
@@ -112,6 +114,7 @@ class EncoderBlock(nn.Module):
         out = self.normb(out)
 
         for i, conv in enumerate(self.convs):
+            res = out
             out = conv(out)
             out = self.norms[i](out)
             out = self.act(out)
@@ -120,6 +123,7 @@ class EncoderBlock(nn.Module):
                 out = self.conv_drops[i](out)
 
 
+        res = out
         out = self.self_att(out, mask)
         out = out + res
         out = self.drop(out)
