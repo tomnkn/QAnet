@@ -47,6 +47,10 @@ def train(
     seed:               int   = 42,
     grad_clip:          float = 5.0,
     early_stop:         int   = 10,
+    log_every_steps:    int   = 10,
+    save_step_metrics:  bool  = True,
+    track_cq_stats:     bool  = True,
+    step_metrics_file:  str   = "",
 
     # ── DL technique selection (string registry keys) ─────────────────────────
     optimizer_name:     str   = "adam",
@@ -95,6 +99,7 @@ def train(
         history   : list[dict]  — per-checkpoint metrics
             keys: step, train_loss, train_f1, train_em,
                   dev_loss, dev_f1, dev_em, lr
+        step_metrics : list[dict] — sampled per-step diagnostics
         ckpt_path : str         — absolute path to the saved checkpoint
         config    : dict        — full resolved configuration
     """
@@ -150,15 +155,19 @@ def train(
     best_em  = 0.0
     patience = 0
     history  = []
+    step_metrics_all = []
 
     for step0 in range(0, num_steps, checkpoint):
         steps_this_block = min(checkpoint, num_steps - step0)
 
-        train_loss = train_single_epoch(
+        train_loss, block_step_metrics = train_single_epoch(
             model, optimizer, scheduler, _train_iter,
             steps_this_block, grad_clip, loss_fn, DEVICE,
             global_step=step0,
+            log_every_steps=log_every_steps,
+            track_cq_stats=track_cq_stats,
         )
+        step_metrics_all.extend(block_step_metrics)
 
         tr_metrics, _ = run_eval(
             model, train_dataset, train_eval,
@@ -211,12 +220,23 @@ def train(
         with open(os.path.join(log_dir, "answers.json"), "w") as f:
             json.dump(ans, f)
 
+    step_metrics_path = ""
+    if save_step_metrics:
+        metrics_filename = step_metrics_file or (
+            f"step_metrics_{optimizer_name}_{scheduler_name}_seed{seed}.json"
+        )
+        step_metrics_path = os.path.join(log_dir, metrics_filename)
+        with open(step_metrics_path, "w") as f:
+            json.dump(step_metrics_all, f)
+
     print(f"Training finished.  Best F1: {best_f1:.4f}  Best EM: {best_em:.4f}")
 
     return {
         "best_f1":   best_f1,
         "best_em":   best_em,
         "history":   history,
+        "step_metrics": step_metrics_all,
+        "step_metrics_path": os.path.abspath(step_metrics_path) if step_metrics_path else "",
         "ckpt_path": os.path.abspath(os.path.join(save_dir, ckpt_name)),
         "config":    vars(args),
     }
