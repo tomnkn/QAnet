@@ -164,11 +164,20 @@ def build_features(examples, data_type: str, out_file: str,
                    ans_limit: int, char_limit: int):
     """Vectorise examples into padded index arrays and save as .npz."""
 
-    def filter_func(ex):
+    def choose_answer_span(ex):
+        """Pick a canonical span: shortest length, tie-broken by earliest start."""
+        spans = list(zip(ex.get("y1s", []), ex.get("y2s", [])))
+        valid = [(int(s), int(e)) for s, e in spans if s <= e]
+        if not valid:
+            return None
+        return min(valid, key=lambda se: (se[1] - se[0], se[0]))
+
+    def filter_func(ex, span):
+        s, e = span
         return (
             len(ex["context_tokens"]) > para_limit
             or len(ex["ques_tokens"]) > ques_limit
-            or (ex["y2s"][0] - ex["y1s"][0]) > ans_limit
+            or (e - s) > ans_limit
         )
 
     def get_word(word):
@@ -188,7 +197,12 @@ def build_features(examples, data_type: str, out_file: str,
 
     for example in tqdm(examples):
         total_all += 1
-        if filter_func(example):
+        chosen_span = choose_answer_span(example)
+        if chosen_span is None:
+            # Skip malformed examples that contain no valid span annotation.
+            continue
+
+        if filter_func(example, chosen_span):
             continue
         total += 1
 
@@ -212,8 +226,8 @@ def build_features(examples, data_type: str, out_file: str,
         context_char_idxs.append(ctx_char_idx)
         ques_idxs.append(q_idx)
         ques_char_idxs.append(q_char_idx)
-        y1s.append(example["y1s"][-1])
-        y2s.append(example["y2s"][-1])
+        y1s.append(chosen_span[0])
+        y2s.append(chosen_span[1])
         ids.append(example["id"])
 
     ensure_parent(out_file)

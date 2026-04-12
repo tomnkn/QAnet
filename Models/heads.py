@@ -2,7 +2,6 @@ import math
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from .encoder import mask_logits
 from .Initializations import uniform_
@@ -26,6 +25,5 @@ class Pointer(nn.Module):
         Y2 = torch.matmul(X2.transpose(1, 2), self.w2)  # [B, L]
         Y1 = mask_logits(Y1, mask)
         Y2 = mask_logits(Y2, mask)
-        p1 = F.log_softmax(Y1, dim=1)
-        p2 = F.log_softmax(Y2, dim=1)
-        return p1, p2
+        # Return raw masked logits so loss choice remains swappable.
+        return Y1, Y2

@@ -117,6 +117,87 @@ This section documents the EMA-related training updates applied to stabilize che
 
 ---
 
+## Embedding Patch Log (Applied)
+
+This section documents the character-convolution axis bug fix in the embedding layer.
+
+### 1) Character convolution changed to token-local 1D Char-CNN
+
+- **File**: `Models/embedding.py`
+- **Bug**:
+  - Char features were previously computed with 2D convolution over `[L, char_len]`, which can mix signal across neighboring token positions.
+- **What changed**:
+  - Replaced 2D conv path with token-local 1D convolution over character axis only.
+  - New flow:
+    - Input char tensor: `[B, L, char_len, d_char]`
+    - Reshape to per-token batches: `[B*L, d_char, char_len]`
+    - Apply depthwise-separable 1D conv over `char_len`
+    - Max-pool over character axis
+    - Reshape back to `[B, d_char, L]`
+- **Why**:
+  - Char-CNN should model subword patterns within each token, not fuse neighboring token positions at this stage.
+
+### Expected impact
+
+- Cleaner token-local character representations.
+- Reduced contextual leakage in embedding stage.
+- Potential improvements in span boundary quality, often visible in EM/F1.
+
+---
+
+## Additional Architecture Patches (Applied)
+
+### 1) Encoder FFN upgraded from 1 layer to 2-layer feed-forward network
+
+- **File**: `Models/encoder.py`
+- **What changed**:
+  - Replaced single projection `d_model -> d_model` with Transformer-style FFN:
+    - `ffn1: d_model -> 4*d_model`
+    - activation
+    - `ffn2: 4*d_model -> d_model`
+  - Residual and dropout structure around the FFN sublayer is preserved.
+- **Why**:
+  - A wider two-layer FFN increases non-linear modeling capacity and is generally stronger than a single linear projection in encoder blocks.
+
+### 2) Highway gate bias initialized to -1.0
+
+- **File**: `Models/embedding.py`
+- **What changed**:
+  - Set each highway gate layer bias to `-1.0` at initialization.
+- **Why**:
+  - Encourages early carry behavior (`1 - gate`) so token representations pass through more easily at the start of training, which can stabilize optimization.
+
+### Expected impact
+
+- Better representational power in encoder FFN sublayers.
+- More stable early-stage embedding flow through highway layers.
+- Potential EM/F1 gains after full retraining from scratch.
+
+---
+
+## Loss/Output Contract Patch (Applied)
+
+### Pointer outputs changed to raw logits, and NLL now handles normalization internally
+
+- **Files**: `Models/heads.py`, `Losses/loss.py`
+- **Bug**:
+  - Pointer head previously returned `log_softmax` outputs, while training allowed switching between `qa_nll` and `qa_ce` losses.
+  - `qa_ce` expects raw logits, so using `qa_ce` with already-normalized log-probabilities created a contract mismatch.
+- **What changed**:
+  - `Models/heads.py`: removed `log_softmax` from pointer output; now returns raw masked logits.
+  - `Losses/loss.py`: `qa_nll_loss` now applies `F.log_softmax` internally before `F.nll_loss`.
+  - `qa_ce_loss` remains unchanged and now receives the correct logits input.
+- **Why**:
+  - Establishes a single clean interface: model returns logits; each loss function owns its required normalization.
+  - Makes loss swapping (`qa_nll` vs `qa_ce`) safe and mathematically consistent.
+
+### Expected impact
+
+- Eliminates loss/output mismatch risk when experimenting with cross-entropy.
+- Improves training robustness and reduces chances of unstable optimization caused by incompatible loss contracts.
+
+---
+
 ## The 17 Errors (Priority Order)
 
 ### 🚨 CRITICAL ERRORS
