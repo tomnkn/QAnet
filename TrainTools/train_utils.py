@@ -84,6 +84,7 @@ def _named_grad_norm(named_parameters, include_name_fn) -> float:
 def train_single_epoch(model, optimizer, scheduler, data_iter,
                        steps, grad_clip, loss_fn, device,
                        global_step: int = 0,
+                       warmup_steps: int = 0,
                        log_every_steps: int = 10,
                        track_cq_stats: bool = True,
                        track_conv_stats: bool = True,
@@ -105,7 +106,17 @@ def train_single_epoch(model, optimizer, scheduler, data_iter,
     if accumulate_grad_steps < 1:
         raise ValueError("accumulate_grad_steps must be >= 1")
 
+    base_lrs = [group.get("base_lr", group["lr"]) for group in optimizer.param_groups]
+
     for local_step in tqdm(range(steps), total=steps):
+        step_id = global_step + local_step + 1
+
+        # Optional linear warmup to avoid unstable early updates.
+        if warmup_steps > 0 and step_id <= warmup_steps:
+            warm = step_id / float(warmup_steps)
+            for group, base_lr in zip(optimizer.param_groups, base_lrs):
+                group["lr"] = base_lr * warm
+
         optimizer.zero_grad(set_to_none=True)
 
         micro_loss_sum = 0.0
@@ -152,17 +163,13 @@ def train_single_epoch(model, optimizer, scheduler, data_iter,
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         grad_norm_after = _global_grad_norm(model.parameters())
         optimizer.step()
-        if scheduler is not None:
+        if scheduler is not None and (warmup_steps == 0 or step_id > warmup_steps):
             scheduler.step()
         if ema is not None:
             ema.update(model)
 
-        step_id = global_step + local_step + 1
         if log_every_steps > 0 and step_id % log_every_steps == 0:
-            if scheduler is not None:
-                current_lr = scheduler.get_last_lr()[0]
-            else:
-                current_lr = optimizer.param_groups[0]["lr"]
+            current_lr = optimizer.param_groups[0]["lr"]
 
             step_metrics.append({
                 "step": step_id,

@@ -6,9 +6,208 @@ I've identified **17 critical errors** in your QANet implementation across optim
 
 ---
 
+## 12 April 2026 Update — Newly Applied Fixes
+
+This section records three additional fixes that were implemented after the earlier audit.
+
+### 1) Best-checkpoint model selection corrected (Applied)
+
+- **File**: `TrainTools/train.py`
+- **What changed**:
+  - Best metrics now initialize to `-1.0` so the first evaluation is always treated as a valid baseline.
+  - Improvement rule is now unified and deterministic:
+    - improve if `dev_f1` is higher, or
+    - if `dev_f1` is equal and `dev_em` is higher.
+  - Checkpoint save now occurs **only on improvement**.
+  - Patience now increments only on non-improving checkpoints and early-stop triggers on `patience >= early_stop`.
+- **Why**:
+  - Prevents overwriting better checkpoints with worse later ones.
+  - Aligns saved checkpoint selection with dev-metric quality.
+
+### 2) Weight-decay parameter grouping added (Applied)
+
+- **File**: `TrainTools/train.py`
+- **What changed**:
+  - Parameters are split into two optimizer groups before optimizer creation:
+    - **decay group**: regular multi-dimensional weights, uses configured `weight_decay`
+    - **no-decay group**: bias terms, norm-related params, and 1D tensors, uses `weight_decay=0.0`
+  - Optimizer is instantiated with grouped parameter dictionaries.
+- **Why**:
+  - Avoids over-regularizing normalization and bias parameters, which commonly harms QA optimization stability and EM.
+
+### 3) Max answer length is now wired through train/eval APIs (Applied)
+
+- **Files**: `TrainTools/train.py`, `EvaluateTools/evaluate.py`
+- **What changed**:
+  - Added `max_answer_len` argument to `train()` and `evaluate()` (default `30`).
+  - Forwarded `max_answer_len` into `run_eval(...)` calls.
+- **Why**:
+  - Makes decode constraints configurable at API level and consistent with constrained span decoding logic.
+  - Reduces risk of train/eval mismatch from hardcoded decoding limits.
+
+### Validation status
+
+- Static diagnostics report no errors introduced in:
+  - `TrainTools/train.py`
+  - `EvaluateTools/evaluate.py`
+
+### 4) Added word-embedding freeze control and enabled safe default (Applied)
+
+- **Files**: `Models/qanet.py`, `TrainTools/train.py`, `EvaluateTools/evaluate.py`
+- **What changed**:
+  - Added a new boolean config flag: `freeze_word`.
+  - `QANet` now reads `freeze_word` from args and applies it to:
+    - `nn.Embedding.from_pretrained(..., freeze=freeze_word)` for word embeddings.
+  - Exposed `freeze_word` in both public APIs:
+    - `train(..., freeze_word: bool = True)`
+    - `evaluate(..., freeze_word: bool = True)`
+- **Why**:
+  - Freezing pretrained GloVe is typically more stable in small-data regimes and helps prevent early overfitting/drift in lexical representations.
+  - This also aligns runtime behavior with standard QANet practice of freezing pretrained word vectors by default.
+
+### 5) Fixed preprocessing supervision consistency for multi-answer spans (Applied)
+
+- **File**: `Tools/preproc.py`
+- **What changed**:
+  - Added canonical span selection per example (`choose_answer_span`):
+    - choose shortest span,
+    - tie-break by earliest start index.
+  - Applied the same chosen span consistently for:
+    - answer-length filtering,
+    - saved training targets (`y1s`, `y2s`).
+  - Updated answer-length filtering to inclusive span length:
+    - from non-inclusive `(y2 - y1)` style behavior
+    - to inclusive `(y2 - y1 + 1)`.
+  - Skips malformed examples that have no valid answer span annotations.
+- **Why**:
+  - Removes label-noise caused by using different spans for filtering vs supervision.
+  - Aligns preprocessing constraints with extractive QA span semantics (inclusive token boundaries).
+  - Improves consistency for EM/F1 learning signals near max-answer-length boundary cases.
+
+### Action required
+
+- Regenerate preprocessed data to apply this fix to training:
+  - rerun preprocessing so `_data/train.npz` and `_data/dev.npz` are rebuilt.
+
+### 6) Aligned QANet architecture to intended topology (Applied)
+
+- **File**: `Models/qanet.py`
+- **What changed**:
+  - Replaced separate context/question projection convolutions with a **shared 1x1 projection conv**:
+    - from two `DepthwiseSeparableConv(..., k=5)` layers
+    - to one shared `Conv1d(..., kernel_size=1)`.
+  - Replaced separate context/question embedding encoders with a **shared embedding encoder**:
+    - from `c_emb_enc` + `q_emb_enc`
+    - to one shared `emb_enc` using `length=max(len_c, len_q)`.
+  - Replaced `cq_resizer` with a **1x1 conv projection**:
+    - from `DepthwiseSeparableConv(..., k=5)`
+    - to `Conv1d(..., kernel_size=1)`.
+  - Added explicit initialization for new 1x1 conv layers via `initializations[init_name]` and zero bias via `constant_`.
+- **Why**:
+  - Matches intended architectural assumptions more closely.
+  - Reduces early-stage feature blurring from wider-kernel projection layers.
+  - Improves architectural consistency so reused hyperparameter recipes are more likely to behave similarly.
+
+### Action required (architecture change)
+
+- Retrain from scratch after this model change.
+- Do not reuse checkpoints produced by the previous architecture.
+
+### 7) Warmup + scheduler behavior update (Applied)
+
+- **Files**: `TrainTools/train.py`, `TrainTools/train_utils.py`
+- **What changed**:
+  - Added `warmup_steps` to `train(...)` public arguments (default `1000`).
+  - `train_single_epoch(...)` now receives warmup for all Adam runs:
+    - `warmup_steps=warmup_steps if optimizer_name == "adam" else 0`
+  - Added stable per-group base LR capture in `train.py`:
+    - `group.setdefault("base_lr", group["lr"])`
+  - Added linear warmup in `train_utils.py` before each optimizer step:
+    - scales LR by `step / warmup_steps` for early steps.
+  - Added scheduler-step guard in `train_utils.py` so scheduler does not overwrite warmup:
+    - scheduler steps only when `warmup_steps == 0` or after warmup completes.
+  - Updated LR printout in `train.py` to read directly from optimizer param groups so logs reflect effective warmup LR.
+- **Why**:
+  - Aligns behavior with the intended training setup where Adam warmup is used even with cosine scheduling.
+  - Prevents warmup/scheduler race conditions that can erase warmup effects in early training.
+
+### 8) Syntax regression from mixed indentation fixed (Applied)
+
+- **File**: `TrainTools/train.py`
+- **Issue**:
+  - Mixed indentation introduced around optimizer/scheduler setup caused parse errors (`Unexpected indentation` / `Unindent amount does not match previous indent`).
+- **Fix**:
+  - Rewrote the affected block with consistent indentation.
+- **Validation**:
+  - Static diagnostics now report no errors in `TrainTools/train.py`.
+
+### Behavioral note
+
+- Current behavior now supports warmup with **every scheduler** for **Adam**.
+- Warmup is still intentionally disabled for non-Adam optimizers (`sgd`, `sgd_momentum`) unless explicitly changed.
+
+### 9) QANet model-encoder stack sharing removed (Applied)
+
+- **File**: `Models/qanet.py`
+- **What changed**:
+  - Replaced a single shared 7-block model-encoder stack with three independent stacks:
+    - `model_enc_blks_1` for the `M1` pass
+    - `model_enc_blks_2` for the `M2` pass
+    - `model_enc_blks_3` for the `M3` pass
+  - Updated forward pass so each stage uses its own parameter set instead of reusing one shared stack.
+- **Why**:
+  - Restores stage-specific representational capacity during iterative refinement.
+  - Better matches intended QANet-style multi-pass model encoder behavior.
+- **Validation**:
+  - Static diagnostics report no errors in `Models/qanet.py` after this change.
+
+---
+
 ## Encoder Patch Log (Applied)
 
 This section documents the exact `Models/encoder.py` fixes that were implemented during debugging.
+
+### 0) EncoderBlock math/order parity fix (Applied, high impact)
+
+- **Location**: `Models/encoder.py` (`EncoderBlock.forward`)
+- **What changed**:
+  - Updated convolution sublayer sequence to match intended parity ordering:
+    - `conv -> act -> (stochastic-depth drop on even convs) -> residual add -> norm`
+  - Updated attention sublayer sequence to:
+    - `out = self.self_att(out, mask) + res`
+    - removed the extra post-attention dropout that was previously applied before entering FFN.
+  - Updated FFN tail ordering to:
+    - `norm -> ffn1 -> act -> ffn2 -> dropout -> residual add`
+- **Why**:
+  - The previous ordering changed residual and normalization placement inside the block, which changes optimization dynamics and representation flow.
+  - This was identified as a high-impact implementation mismatch for `qa_nll + layer_norm` runs and can directly affect EM/F1.
+- **Validation**:
+  - Static diagnostics report no errors after the patch in `Models/encoder.py`.
+- **Observed training impact**:
+  - Recent post-fix runs show major improvement in both F1 and EM.
+  - Improvement is especially visible in the 3000-step run, where metric jumps are noticeably larger than before this fix.
+  - Compact 3000-step run snapshot (TEST metrics at each checkpoint):
+    - 300: loss 33.14, F1 6.21, EM 0.16
+    - 600: loss 12.14, F1 8.69, EM 1.88
+    - 900: loss 8.42, F1 11.60, EM 6.09
+    - 1200: loss 7.54, F1 14.65, EM 9.84
+    - 1500: loss 6.89, F1 20.01, EM 14.06
+    - 1800: loss 6.32, F1 25.66, EM 19.53
+    - 2100: loss 5.93, F1 30.94, EM 23.12
+    - 2400: loss 5.70, F1 31.70, EM 24.84
+    - 2700: loss 5.55, F1 36.42, EM 29.38
+    - 3000: loss 5.46, F1 39.87, EM 33.12
+  - End-of-run summary:
+    - Best F1: 39.8673
+    - Best EM: 33.1250
+    - Net gain from step 300 to step 3000: F1 +33.66, EM +32.97
+  - Run configuration used for this result:
+    - num_steps=3000, checkpoint=300, val_num_batches=0, test_num_batches=80
+    - accumulate_grad_steps=4, batch_size=8, seed=42, early_stop=8
+    - optimizer=adam, scheduler=cosine, loss=qa_nll
+    - learning_rate=1.5e-3, beta1=0.9, beta2=0.999, eps=1e-8
+    - weight_decay=3e-7, grad_clip=1.0, warmup_steps=250
+    - dropout=0.15, d_model=128
 
 ### 1) Multi-head ordering normalized and made consistent
 
@@ -70,6 +269,24 @@ This section documents the `EvaluateTools/eval_utils.py` fixes that were impleme
   - Added guard for `total == 0` to return `{exact_match: 0.0, f1: 0.0}`.
 - **Why**:
   - Prevents `ZeroDivisionError` when evaluation is invoked with zero sampled batches.
+
+### 3) Checkpoint-driven architecture loading in evaluate entrypoint (Applied)
+
+- **Location**: `EvaluateTools/evaluate.py` (`evaluate`)
+- **What changed**:
+  - `evaluate()` now loads checkpoint metadata/state before model construction.
+  - Added support for both checkpoint schemas:
+    - `ckpt["model"]`
+    - `ckpt["model_state"]`
+  - Added architecture inference from checkpoint weights to prevent shape drift:
+    - `d_model` inferred from `state["conv.weight"].shape[0]` when available
+    - `glove_dim` inferred from `state["word_emb.weight"].shape[1]`
+    - `char_dim` inferred from `state["char_emb.weight"].shape[1]`
+  - `args` now prioritizes checkpoint `config` values (with function defaults as fallback) before building `QANet`.
+  - Then loads state dict into a shape-compatible model instance.
+- **Why**:
+  - Fixes runtime `size mismatch` errors when a checkpoint was trained with different architecture settings (for example `d_model=128`) than evaluate defaults (`d_model=96`).
+  - Makes notebook and script evaluation robust across experiments without manual architecture argument syncing.
 
 ### Expected impact
 
@@ -875,7 +1092,7 @@ After applying all fixes, verify:
 ## Next Steps
 
 1. **Read** `ERROR_ANALYSIS.ipynb` for detailed explanations with formulas
-2. **Reference** `FIXES_QUICK_REFERENCE.md` for side-by-side code comparisons
+2. **Reference** `FIXES_QUICK_REFERENCE.md` for side-by-side code diffs
 3. **Implement** fixes in priority order (Critical → High → Medium → Low)
 4. **Test** training pipeline after each fix
 5. **Validate** using checklist above

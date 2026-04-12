@@ -18,15 +18,15 @@ def get_norm(name: str, d_model: int, length: int, num_groups: int = 8) -> nn.Mo
     Args:
         name:       one of "layer_norm", "group_norm"
         d_model:    number of channels (C)
-        length:     sequence length (L); used only by layer_norm
+        length:     sequence length (L); unused for layer_norm, kept for API compatibility
         num_groups: number of groups; used only by group_norm
 
     Returns:
         nn.Module instance of the requested normalization.
 
     Shapes:
-        "layer_norm" → LayerNorm([d_model, length])
-            normalizes over the last two dims of [B, d_model, length]
+        "layer_norm" → LayerNorm(d_model)
+            normalizes across channel dim per position of [B, d_model, length]
         "group_norm"  → GroupNorm(num_groups, d_model)
             normalizes over [C/G, *spatial] per group of [B, d_model, *]
     """
@@ -35,6 +35,6 @@ def get_norm(name: str, d_model: int, length: int, num_groups: int = 8) -> nn.Mo
             f"Unknown normalization '{name}'. Available: {list(normalizations.keys())}"
         )
     if name == "layer_norm":
-        return LayerNorm([d_model, length])
+        return LayerNorm(d_model)
     else:  # group_norm
         return GroupNorm(num_groups, d_model)

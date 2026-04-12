@@ -115,19 +115,15 @@ class EncoderBlock(nn.Module):
         out = self.normb(out)
 
         for i, conv in enumerate(self.convs):
-            res = out
             out = conv(out)
-            out = self.norms[i](out)
             out = self.act(out)
-            out = out + res
             if (i + 1) % 2 == 0:
                 out = self.conv_drops[i](out)
+            out = out + res
+            res = out
+            out = self.norms[i](out)
 
-
-        res = out
-        out = self.self_att(out, mask)
-        out = out + res
-        out = self.drop(out)
+        out = self.self_att(out, mask) + res
 
         res = out
         out = self.norme(out)
@@ -136,6 +132,6 @@ class EncoderBlock(nn.Module):
         out = self.act(out)
         out = self.ffn2(out)
         out = out.transpose(1, 2)
-        out = out + res
         out = self.drop(out)
+        out = out + res
         return out

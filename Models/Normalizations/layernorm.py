@@ -1,41 +1,42 @@
 import torch
 import torch.nn as nn
-from typing import Union, List
 
 
 class LayerNorm(nn.Module):
     """
-    Custom LayerNorm implementation without using nn.LayerNorm or F.layer_norm.
+    Channel-only LayerNorm for [B, C, L]-style tensors.
 
-    Normalizes over the last len(normalized_shape) dimensions of the input.
-    For a tensor of shape [B, C, L] with normalized_shape=[C, L], normalization
-    is computed over the [C, L] slice of each batch element independently.
-
-    y = (x - mean) / sqrt(var + eps) * weight + bias
+    Unlike nn.LayerNorm([C, L]), this normalizes each token position
+    independently across channels only (dim=1), which matches QANet/
+    Transformer-style feature normalization.
     """
 
     def __init__(
         self,
-        normalized_shape: Union[int, List[int]],
+        num_channels: int,
         eps: float = 1e-5,
     ):
         super().__init__()
-        if isinstance(normalized_shape, int):
-            normalized_shape = [normalized_shape]
-        self.normalized_shape = list(normalized_shape)
+        if num_channels <= 0:
+            raise ValueError(f"num_channels must be positive, got {num_channels}")
+        self.num_channels = int(num_channels)
         self.eps = eps
 
-        # Learnable affine parameters (same shape as normalized_shape)
-        self.weight = nn.Parameter(torch.ones(self.normalized_shape))
-        self.bias = nn.Parameter(torch.zeros(self.normalized_shape))
+        # Per-channel affine parameters: [C, 1], broadcast over sequence/time.
+        self.weight = nn.Parameter(torch.ones(self.num_channels, 1))
+        self.bias = nn.Parameter(torch.zeros(self.num_channels, 1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Determine which dims to reduce over (the last N dims)
-        n = len(self.normalized_shape)
-        dims = tuple(range(-n, 0))  # e.g. (-2, -1) for a 2-D normalized_shape
+        if x.dim() < 3:
+            raise ValueError(f"Expected tensor with shape [B, C, ...], got {tuple(x.shape)}")
+        if x.size(1) != self.num_channels:
+            raise ValueError(
+                f"Channel mismatch: expected C={self.num_channels}, got C={x.size(1)}"
+            )
 
-        mean = x.mean(dim=dims, keepdim=True)
-        var = x.var(dim=dims, keepdim=True, unbiased=False)
+        # Normalize each position independently across channels.
+        mean = x.mean(dim=1, keepdim=True)
+        var = x.var(dim=1, keepdim=True, unbiased=False)
 
         x_norm = (x - mean) / torch.sqrt(var + self.eps)
-        return x_norm * self.weight + self.bias
+        return x_norm * self.weight.unsqueeze(0) + self.bias.unsqueeze(0)

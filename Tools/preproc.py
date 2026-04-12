@@ -165,19 +165,22 @@ def build_features(examples, data_type: str, out_file: str,
     """Vectorise examples into padded index arrays and save as .npz."""
 
     def choose_answer_span(ex):
-        """Pick a canonical span: shortest length, tie-broken by earliest start."""
-        spans = list(zip(ex.get("y1s", []), ex.get("y2s", [])))
-        valid = [(int(s), int(e)) for s, e in spans if s <= e]
-        if not valid:
+        # Use one stable supervision target for multi-answer examples.
+        spans = list(zip(ex["y1s"], ex["y2s"]))
+        if not spans:
             return None
-        return min(valid, key=lambda se: (se[1] - se[0], se[0]))
+        # Prefer shortest span, then earliest start index.
+        return min(spans, key=lambda t: ((t[1] - t[0] + 1), t[0]))
 
-    def filter_func(ex, span):
-        s, e = span
+    def filter_func(ex):
+        chosen = choose_answer_span(ex)
+        if chosen is None:
+            return True
+        y1, y2 = chosen
         return (
             len(ex["context_tokens"]) > para_limit
             or len(ex["ques_tokens"]) > ques_limit
-            or (e - s) > ans_limit
+            or (y2 - y1 + 1) > ans_limit
         )
 
     def get_word(word):
@@ -197,14 +200,13 @@ def build_features(examples, data_type: str, out_file: str,
 
     for example in tqdm(examples):
         total_all += 1
-        chosen_span = choose_answer_span(example)
-        if chosen_span is None:
-            # Skip malformed examples that contain no valid span annotation.
+        chosen = choose_answer_span(example)
+        if chosen is None:
             continue
-
-        if filter_func(example, chosen_span):
+        if filter_func(example):
             continue
         total += 1
+        y1, y2 = chosen
 
         ctx_idx = np.zeros([para_limit], dtype=np.int32)
         ctx_char_idx = np.zeros([para_limit, char_limit], dtype=np.int32)
@@ -226,8 +228,8 @@ def build_features(examples, data_type: str, out_file: str,
         context_char_idxs.append(ctx_char_idx)
         ques_idxs.append(q_idx)
         ques_char_idxs.append(q_char_idx)
-        y1s.append(chosen_span[0])
-        y2s.append(chosen_span[1])
+        y1s.append(y1)
+        y2s.append(y2)
         ids.append(example["id"])
 
     ensure_parent(out_file)
