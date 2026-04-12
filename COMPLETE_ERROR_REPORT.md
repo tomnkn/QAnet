@@ -80,6 +80,134 @@ Quick interpretation:
 - With `val_num_batches=0`, the printed `VALID(train)` line is expected to stay at zeros and is not informative.
 - This behavior supports using best-checkpoint selection and cautious extension beyond the early-gain window.
 
+### 0b) Training Run Log (6k-step cosine, qa_nll)
+
+Recorded here as the extended run using the stronger 3k-style recipe and evaluation protocol.
+
+Run configuration:
+
+```python
+num_steps             = 6000
+checkpoint            = 300
+val_num_batches       = 0
+test_num_batches      = 80
+accumulate_grad_steps = 4
+batch_size            = 8
+seed                  = 42
+early_stop            = 8
+
+# -- Optimiser hyperparameters --
+optimizer_name = "adam"
+scheduler_name = "cosine"
+loss_name      = "qa_nll"
+learning_rate  = 1.5e-3
+beta1          = 0.9
+beta2          = 0.999
+eps            = 1e-8
+weight_decay   = 3e-7
+grad_clip      = 1.0
+warmup_steps   = 250
+dropout        = 0.15
+d_model        = 128
+```
+
+Observed logs (checkpoint summaries):
+
+```text
+STEP      300  loss 17.281048
+TEST        loss 33.174698  F1 6.330003  EM 0.156250
+Learning rate: [0.0014997429937316678, 0.0014997429937316678]
+
+STEP      600  loss 7.572760
+TEST        loss 12.337067  F1 7.609810  EM 1.093750
+Learning rate: [0.001487441180672966, 0.001487441180672966]
+
+STEP      900  loss 6.685023
+TEST        loss 8.436070  F1 12.080933  EM 6.875000
+Learning rate: [0.001456981118319134, 0.001456981118319134]
+
+STEP     1200  loss 6.183356
+TEST        loss 7.494975  F1 16.296433  EM 10.781250
+Learning rate: [0.001409112834496474, 0.001409112834496474]
+
+STEP     1500  loss 5.811346
+TEST        loss 6.827041  F1 20.151298  EM 14.218750
+Learning rate: [0.0013450150052184264, 0.0013450150052184264]
+
+STEP     1800  loss 5.609157
+TEST        loss 6.266084  F1 26.621253  EM 19.531250
+Learning rate: [0.0012662659317703156, 0.0012662659317703156]
+
+STEP     2100  loss 5.308592
+TEST        loss 5.865751  F1 32.147117  EM 25.156250
+Learning rate: [0.0011748046776936247, 0.0011748046776936247]
+
+STEP     2400  loss 5.087882
+TEST        loss 5.595476  F1 34.877410  EM 27.187500
+Learning rate: [0.0010728833226062214, 0.0010728833226062214]
+
+STEP     2700  loss 4.938919
+TEST        loss 5.411746  F1 38.017327  EM 30.781250
+Learning rate: [0.0009630115085279421, 0.0009630115085279421]
+
+STEP     3000  loss 4.623129
+TEST        loss 5.287443  F1 40.756156  EM 33.437500
+Learning rate: [0.0008478946441650389, 0.0008478946441650389]
+
+STEP     3300  loss 4.386594
+TEST        loss 5.189689  F1 41.787950  EM 35.312500
+Learning rate: [0.0007303672887690953, 0.0007303672887690953]
+
+STEP     3600  loss 4.275520
+TEST        loss 5.114536  F1 43.185632  EM 36.406250
+Learning rate: [0.0006133233558808894, 0.0006133233558808894]
+
+STEP     3900  loss 3.927351
+TEST        loss 5.043906  F1 44.794145  EM 38.593750
+Learning rate: [0.0004996448555746719, 0.0004996448555746719]
+
+STEP     4200  loss 3.565917
+TEST        loss 4.991076  F1 45.751582  EM 39.687500
+Learning rate: [0.00039213092980529366, 0.00039213092980529366]
+
+STEP     4500  loss 3.441391
+TEST        loss 4.959480  F1 46.180383  EM 40.625000
+Learning rate: [0.0002934289282434595, 0.0002934289282434595]
+
+STEP     4800  loss 3.261348
+TEST        loss 4.931525  F1 48.592736  EM 42.812500
+Learning rate: [0.00020596922174078428, 0.00020596922174078428]
+
+STEP     5100  loss 2.862299
+TEST        loss 4.934231  F1 48.891495  EM 43.125000
+Learning rate: [0.00013190535853348822, 0.00013190535853348822]
+
+STEP     5400  loss 2.840447
+TEST        loss 4.911122  F1 50.595733  EM 45.312500
+Learning rate: [7.306103673760453e-05, 7.306103673760453e-05]
+
+STEP     5700  loss 2.752290
+TEST        loss 4.893411  F1 51.941134  EM 46.406250
+Learning rate: [3.0885198848855215e-05, 3.0885198848855215e-05]
+
+STEP     6000  loss 2.595351
+TEST        loss 4.893720  F1 53.145107  EM 46.875000
+Learning rate: [6.416353969642214e-06, 6.416353969642214e-06]
+
+Training finished.  Best F1: 53.1451  Best EM: 46.8750
+Best F1: 53.1451  |  Best EM: 46.8750
+
+Post-training full-dev evaluation (evaluate.py):
+TEST  loss 4.548540  F1 54.216320  EM 44.043183
+```
+
+Quick interpretation:
+
+- Unlike the earlier 10k recipe, this run shows steady gains through 6000 steps.
+- Best observed dev metrics in this run are `F1=53.1451`, `EM=46.8750` at step 6000.
+- Full-dev evaluation after training reports `loss=4.548540`, `F1=54.216320`, `EM=44.043183`.
+- As above, `val_num_batches=0` means `VALID(train)` remains zero by design.
+
 ### 1) Best-checkpoint model selection corrected (Applied)
 
 - **File**: `TrainTools/train.py`
