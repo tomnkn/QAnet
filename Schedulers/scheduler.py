@@ -25,21 +25,21 @@ def step_scheduler(optimizer, args):
 
 
 def warmup_lambda(t):
-    """Inverse exponential warmup from 0.0 to 1.0 in first 1000 steps, then constant.
+    """Inverse exponential warmup from 0.0 to 1.0 in first 250 steps, then constant.
     
     From QANet paper (https://arxiv.org/pdf/1804.09541):
-    - Warmup: inverse exponential increase from 0.0 to 0.001 in the first 1000 steps
-    - After 1000 steps: maintain constant learning rate
+    - Warmup: inverse exponential increase from 0.0 to 0.001 in the first 250 steps
+    - After 250 steps: maintain constant learning rate (og paper is 1000 steps)
     
     When paired with an optimizer with base_lr=0.001, this produces:
     - LR(0) = 0.001 * 0 ≈ 0.0
-    - LR(1000) ≈ 0.001 * 1.0 = 0.001
-    - LR(>1000) = 0.001 * 1.0 = 0.001
+    - LR(250) ≈ 0.001 * 1.0 = 0.001
+    - LR(>250) = 0.001 * 1.0 = 0.001
     """
-    if t < 1000:
+    if t < 250:
         # Inverse exponential approach: 1 - exp(-t/tau)
-        # tau ≈ 250 ensures ~99% saturation by t=1000
-        tau = 250.0
+        # tau ≈ 62.5 ensures ~98% saturation by t=250
+        tau = 62.5
         return 1.0 - math.exp(-t / tau)
     else:
         # Constant learning rate for remainder of training
