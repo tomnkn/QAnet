@@ -10,6 +10,76 @@ I've identified **17 critical errors** in your QANet implementation across optim
 
 This section records three additional fixes that were implemented after the earlier audit.
 
+### 0) Training Run Log (10k-step cosine, qa_nll)
+
+Recorded here for reproducibility and direct comparison against the stronger 3k-run recipe.
+
+Run configuration:
+
+```python
+# -- training loop -----------------------------------------------------------
+num_steps  = 10000
+checkpoint = 500
+batch_size = 8
+accumulate_grad_steps = 4
+seed = 42
+val_num_batches = 0  # train-monitoring disabled (prints 0 metrics)
+test_num_batches = 150
+early_stop = 10
+
+# -- optimizer / scheduler ---------------------------------------------------
+optimizer_name = "adam"
+scheduler_name = "cosine"
+loss_name = "qa_nll"
+
+learning_rate = 1e-3
+beta1 = 0.9
+beta2 = 0.999
+eps = 1e-8
+weight_decay = 3e-5
+grad_clip = 1.0
+warmup_steps = 1000
+dropout = 0.15
+d_model = 128
+```
+
+Observed logs (excerpt through step 3500):
+
+```text
+STEP      500  loss 20.547813
+TEST        loss 27.719023  F1 6.363199  EM 0.250000
+Learning rate: [0.0005, 0.0005]
+
+STEP     1000  loss 7.917776
+TEST        loss 9.229487  F1 8.414490  EM 2.416667
+Learning rate: [0.001, 0.001]
+
+STEP     1500  loss 7.490897
+TEST        loss 7.583587  F1 12.842754  EM 7.833333
+Learning rate: [0.0009938441702975688, 0.0009938441702975688]
+
+STEP     2000  loss 8.809056
+TEST        loss 7.173117  F1 17.916788  EM 12.500000
+Learning rate: [0.0009755282581475768, 0.0009755282581475768]
+
+STEP     2500  loss 17.629601
+TEST        loss 7.423115  F1 16.312539  EM 9.166667
+Learning rate: [0.0009455032620941839, 0.0009455032620941839]
+
+STEP     3000  loss 30.962723
+TEST        loss 8.109672  F1 10.433804  EM 4.166667
+Learning rate: [0.0009045084971874737, 0.0009045084971874737]
+
+STEP     3500  loss 31.202969
+TEST        loss 12.451104  F1 6.500154  EM 0.750000
+```
+
+Quick interpretation:
+
+- This run improves until about step 2000, then degrades notably by 3000-3500.
+- With `val_num_batches=0`, the printed `VALID(train)` line is expected to stay at zeros and is not informative.
+- This behavior supports using best-checkpoint selection and cautious extension beyond the early-gain window.
+
 ### 1) Best-checkpoint model selection corrected (Applied)
 
 - **File**: `TrainTools/train.py`
