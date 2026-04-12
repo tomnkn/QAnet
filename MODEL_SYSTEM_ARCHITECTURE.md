@@ -1,375 +1,416 @@
-# QANet Model and System Architecture (Implementation Guide)
+# QANet Model and System Architecture (Current Implementation)
 
-This document describes the complete implementation architecture of the project so a new user or AI agent can understand, run, and modify the system confidently.
+This document describes the architecture implemented in this repository as it exists now, including training/evaluation control flow, module responsibilities, registries, tensor contracts, and checkpoint behavior.
 
-## 1. What This Repository Implements
+## 1. Repository Scope
 
-- Task: Extractive question answering on SQuAD v1.1.
-- Model: QANet-style architecture with:
-  - word + character embedding fusion,
-  - encoder blocks (depthwise separable conv + self-attention + feed-forward),
-  - context-question attention,
-  - pointer head for start/end span prediction.
-- Entrypoint workflow is notebook-driven via `assignment1.ipynb`:
-  - Section 0: environment setup
-  - Section 1: optional data download
-  - Section 2: preprocessing
-  - Section 3: training
-  - Section 4: evaluation
+- Task: extractive question answering on SQuAD v1.1.
+- Main workflow: notebook-driven via assignment1.ipynb (setup, preprocess, train, evaluate).
+- Core model: QANet-style architecture with word+char embedding fusion, encoder blocks, context-question attention, and span pointer head.
 
-## 2. High-Level Pipeline
+## 2. End-to-End Pipeline
 
-1. Raw SQuAD JSON + embedding files are preprocessed into cached arrays and metadata.
-2. Training loads cached tensors, constructs QANet from config, trains in blocks, evaluates periodically, and saves checkpoint + answers.
-3. Evaluation reloads the model/checkpoint and computes dev metrics (F1, EM, loss).
+1. Preprocessing parses SQuAD and embedding files into cached arrays and metadata.
+2. Training loads caches, builds QANet from args/config, trains in checkpoint blocks, evaluates periodically, and writes checkpoint/log artifacts.
+3. Evaluation restores a saved model checkpoint, infers architecture settings when needed, evaluates on dev, and writes predictions.
 
 Data flow:
 
-`Raw JSON/GloVe -> preprocess() -> _data/*.npz + *.json -> train() -> _model/model.pt + _log/answers.json -> evaluate()`
+Raw SQuAD + embeddings -> preprocess() -> _data/*.npz + _data/*.json -> train() -> _model/model.pt + _log/*.json -> evaluate()
 
-## 3. Directory and Module Responsibilities
+## 3. Module Responsibilities
 
-- `Tools/`
-  - `preproc.py`: full SQuAD preprocessing pipeline.
-  - `utils.py`: utility helpers (`set_seed`).
-  - `download.py`: dataset download helper.
-- `Data/`
-  - `squad.py`: dataset class and cache sanity checks.
-  - `loader.py`: DataLoader factory.
-  - `io.py`: read embeddings/eval metadata from JSON.
-- `Models/`
-  - `qanet.py`: top-level QANet graph.
-  - `embedding.py`: character + word embedding fusion and highway network.
-  - `encoder.py`: positional encoding, multi-head attention, encoder block.
-  - `attention.py`: context-question attention (trilinear style).
-  - `heads.py`: pointer output head for start/end logits.
-  - `conv.py`: custom Conv1d/Conv2d and depthwise separable conv.
-  - `dropout.py`: custom inverted dropout.
-  - `Initializations/`: Kaiming/Xavier initialization registry.
-  - `Normalizations/`: LayerNorm/GroupNorm registry.
-  - `Activations/`: activation registry.
-- `Optimizers/`
-  - `adam.py`, `sgd.py`, `sgd_momentum.py`: custom optimizer implementations.
-  - `optimizer.py`: optimizer registry/factories.
-- `Schedulers/`
-  - `cosine_scheduler.py`, `step_scheduler.py`, `lambda_scheduler.py`: custom schedulers.
-  - `scheduler.py`: scheduler registry/factories.
-- `Losses/`
-  - `loss.py`: span loss functions (`qa_nll`, `qa_ce`) + registry.
-- `TrainTools/`
-  - `train.py`: public training API.
-  - `train_utils.py`: step loop and checkpoint writer.
-- `EvaluateTools/`
-  - `evaluate.py`: public evaluation API.
-  - `eval_utils.py`: SQuAD metric logic and batch evaluation.
+### Data
+
+- Data/squad.py
+  - SQuADDataset loads NPZ arrays and returns:
+    - (Cwid, Ccid, Qwid, Qcid, y1, y2, id)
+  - sanity_check_cache validates required cache files, NPZ keys, non-empty train set, and y1 <= y2.
+- Data/loader.py
+  - make_loader builds DataLoader (num_workers=0).
+- Data/io.py
+  - load_word_char_mats, load_train_dev_eval, load_dev_eval.
+
+### Models
+
+- Models/qanet.py
+  - Top-level QANet graph and forward pass.
+- Models/embedding.py
+  - Word+char fusion with depthwise separable char conv + Highway network.
+- Models/encoder.py
+  - Positional encoding, multi-head self-attention, encoder block, mask_logits.
+- Models/attention.py
+  - Context-question attention (trilinear features [C, Q, C*Q]).
+- Models/heads.py
+  - Pointer head for start/end logits.
+- Models/conv.py
+  - Custom Conv1d/Conv2d and depthwise separable conv implementations.
+- Models/dropout.py
+  - Custom inverted dropout layer.
+- Models/Initializations/*
+  - Initialization registry and implementations.
+- Models/Normalizations/*
+  - Layer norm and group norm registry/factory.
+- Models/Activations/*
+  - ReLU and LeakyReLU registry/factory.
+
+### Training/Evaluation/Loss
+
+- TrainTools/train.py
+  - Public training API and orchestration.
+- TrainTools/train_utils.py
+  - Block step loop, EMA, gradient metrics, checkpoint save.
+- EvaluateTools/evaluate.py
+  - Public evaluation API, checkpoint loading, config inference.
+- EvaluateTools/eval_utils.py
+  - Batched evaluation, constrained span decoding, SQuAD EM/F1 metrics.
+- Losses/loss.py
+  - qa_nll and qa_ce span losses.
+
+### Optimizers/Schedulers/Utilities
+
+- Optimizers/optimizer.py
+  - Optimizer registry/factories.
+- Schedulers/scheduler.py
+  - Scheduler registry/factories and warmup lambda.
+- Tools/preproc.py
+  - Full preprocessing pipeline.
+- Tools/utils.py
+  - set_seed helper.
 
 ## 4. Preprocessing Architecture
 
-Implemented in `Tools/preproc.py`.
+Implemented in Tools/preproc.py.
+
+### Inputs
 
-### 4.1 Inputs
+- train_file, dev_file (SQuAD JSON)
+- glove_word_file (or fastText if fasttext=True)
+- optional glove_char_file if pretrained_char=True
+
+### Processing Steps
+
+1. Parse SQuAD into examples and eval metadata.
+2. Tokenize text via regex tokenizer.
+3. Build token character sequences.
+4. Convert answer char spans to token spans.
+5. Build word/char frequency counters.
+6. Build embeddings + token2idx maps.
+7. Vectorize with limits:
+   - para_limit (default 400)
+   - ques_limit (default 50)
+   - ans_limit (default 30)
+   - char_limit (default 16)
+8. Save NPZ and JSON outputs.
+
+### Outputs
+
+- train.npz, dev.npz with keys:
+  - context_idxs
+  - context_char_idxs
+  - ques_idxs
+  - ques_char_idxs
+  - y1s
+  - y2s
+  - ids
+- word_emb.json, char_emb.json
+- train_eval.json, dev_eval.json
+- word2idx.json, char2idx.json
+- dev_meta.json
 
-- `train_file`, `dev_file`: SQuAD JSON.
-- `glove_word_file` (or optional fastText).
-- optional `glove_char_file` if `pretrained_char=True`.
+## 5. Dataset and Tensor Contracts
 
-### 4.2 Core processing stages
+Single sample from dataset:
 
-1. Parse SQuAD articles/paragraphs/QAs.
-2. Tokenize context/question via regex tokenizer.
-3. Build character-level token forms.
-4. Map answer character spans to token spans (`y1`,`y2`).
-5. Build vocab counters (word and char).
-6. Build embedding matrices and token-index maps.
-7. Vectorize into fixed-size arrays with limits:
-   - context length: `para_limit`
-   - question length: `ques_limit`
-   - per-token char length: `char_limit`
-8. Save all outputs under `_data` (by default).
+- Cwid: [Lc]
+- Ccid: [Lc, char_limit]
+- Qwid: [Lq]
+- Qcid: [Lq, char_limit]
+- y1, y2: scalar indices
+- id: scalar example id
 
-### 4.3 Output artifacts
+Batch shapes:
 
-- `train.npz`, `dev.npz` containing:
-  - `context_idxs`, `context_char_idxs`, `ques_idxs`, `ques_char_idxs`, `y1s`, `y2s`, `ids`
-- `word_emb.json`, `char_emb.json`
-- `train_eval.json`, `dev_eval.json`
-- `word2idx.json`, `char2idx.json`
-- `dev_meta.json`
+- Cwid: [B, Lc]
+- Ccid: [B, Lc, char_limit]
+- Qwid: [B, Lq]
+- Qcid: [B, Lq, char_limit]
+- y1, y2: [B]
 
-## 5. Dataset and DataLoader Contracts
+Mask semantics used throughout model:
 
-Implemented in `Data/squad.py` and `Data/loader.py`.
+- cmask = (Cwid == 0)
+- qmask = (Qwid == 0)
+- True means PAD/invalid position.
 
-### 5.1 Sample tuple shape contract
+mask_logits fills masked positions with -1e30 before softmax/argmax steps.
 
-Each dataset item returns:
+## 6. QANet Implementation Details
 
-`(Cwid, Ccid, Qwid, Qcid, y1, y2, id)`
+Top-level in Models/qanet.py.
 
-with tensors:
-- `Cwid`: `[para_limit]`
-- `Ccid`: `[para_limit, char_limit]`
-- `Qwid`: `[ques_limit]`
-- `Qcid`: `[ques_limit, char_limit]`
-- `y1`, `y2`: scalar span indices
+### Embedding Stage
 
-### 5.2 Training batch contract
+- Word embedding: nn.Embedding.from_pretrained(word_mat, freeze=freeze_word).
+- Char embedding: nn.Embedding.from_pretrained(char_mat, freeze=pretrained_char).
+- Embedding module:
+  - char branch: depthwise separable conv + activation + max over char axis
+  - word branch: dropout + transpose
+  - concat + 2-layer Highway
 
-After collation (`batch_size = B`):
-- `Cwid`: `[B, Lc]`
-- `Ccid`: `[B, Lc, char_limit]`
-- `Qwid`: `[B, Lq]`
-- `Qcid`: `[B, Lq, char_limit]`
+### Input Projection and Embedding Encoder
 
-### 5.3 Cache sanity checks
+- Shared 1x1 projection conv for context and question.
+- Shared embedding encoder block for both streams:
+  - Ce = emb_enc(C, cmask)
+  - Qe = emb_enc(Q, qmask)
 
-`sanity_check_cache()` ensures:
-- required files exist,
-- required NPZ keys exist,
-- non-empty train set,
-- no invalid span where `y1 > y2`.
+### Context-Question Attention
 
-## 6. QANet Model Architecture (Implementation-Level)
+- CQAttention builds similarity on concatenated [C, Q, C*Q].
+- Computes attended representations A and B.
+- Output shape: [B, 4*d_model, Lc].
 
-Top-level in `Models/qanet.py`.
+### Model Encoder Stacks
 
-### 6.1 Embedding stage
+- cq_resizer projects 4*d_model -> d_model.
+- Three separate model encoder stacks (not shared weights):
+  - model_enc_blks_1: produces M1
+  - model_enc_blks_2: produces M2 (from M1)
+  - model_enc_blks_3: produces M3 (from M2)
+- Each stack contains 7 EncoderBlock modules.
 
-- Word embedding: `nn.Embedding.from_pretrained(word_mat, freeze=False)`.
-- Char embedding: `nn.Embedding.from_pretrained(char_mat, freeze=pretrained_char)`.
-- Character branch in `Embedding`:
-  - 2D depthwise separable conv over char dimension,
-  - activation,
-  - max over char axis.
-- Word branch:
-  - dropout,
-  - channel transpose.
-- Fusion:
-  - concatenate char+word channels,
-  - 2-layer Highway network.
+### Pointer Head
 
-Output of embedding module: `[B, d_word + d_char, L]`.
+- Pointer concatenates [M1, M2] and [M1, M3].
+- Projects with learned vectors w1/w2.
+- Applies mask_logits on PAD positions.
+- Returns raw masked logits (not log-softmax):
+  - p1: [B, Lc]
+  - p2: [B, Lc]
 
-### 6.2 Input projection
+## 7. Encoder Block Design
 
-- `context_conv` and `question_conv`: depthwise separable 1D conv
-- project fused channels to model dim `d_model`.
+Implemented in Models/encoder.py.
 
-Outputs:
-- `C`: `[B, d_model, Lc]`
-- `Q`: `[B, d_model, Lq]`
+- Positional encoding: sinusoidal buffer (non-trainable).
+- Conv stack:
+  - DepthwiseSeparableConv repeated conv_num times.
+  - Stochastic-depth-style conv dropout with increasing probability by depth.
+- Self-attention:
+  - Multi-head scaled dot-product attention.
+- Feed-forward:
+  - Linear(d_model -> 4*d_model) -> activation -> Linear(4*d_model -> d_model).
+- Residual + normalization structure around each stage.
 
-### 6.3 Embedding encoders
+Normalization and activation are selected via registries (args.norm_name, args.activation).
 
-- Separate `EncoderBlock` for context and question:
-  - positional encoding (sinusoidal buffer),
-  - repeated depthwise separable conv stack,
-  - multi-head self-attention,
-  - feed-forward linear layer,
-  - residual + dropout + normalization structure.
+## 8. Registries and Selectable Components
 
-Outputs:
-- `Ce`: `[B, d_model, Lc]`
-- `Qe`: `[B, d_model, Lq]`
+### Optimizers
 
-### 6.4 Context-question attention
+From Optimizers/optimizer.py:
 
-`CQAttention` (`Models/attention.py`):
-- Builds similarity tensor using concatenated trilinear-style features `[C, Q, C*Q]`.
-- Computes attention both context->question and question-aware context.
-- Returns concatenated tensor `[C, A, C*A, C*B]`.
-
-Output: `[B, 4*d_model, Lc]`.
+- adam
+- sgd
+- sgd_momentum
 
-### 6.5 Model encoder stack
+### Schedulers
 
-- `cq_resizer` projects `[B, 4*d_model, Lc] -> [B, d_model, Lc]` as `M1` seed.
-- A 7-block `ModuleList` is reused in three passes to produce `M1`, `M2`, `M3`:
-  - pass 1: `M1`
-  - pass 2: `M2`
-  - pass 3: `M3`
+From Schedulers/scheduler.py:
 
-### 6.6 Output pointer head
+- cosine
+- step
+- lambda
+- none (handled in train.py by disabling scheduler)
 
-`Pointer` in `Models/heads.py`:
-- Concatenate `M1/M2` and `M1/M3` to get two `[B, 2C, L]` tensors.
-- Project with learned vectors to start/end logits.
-- Apply masking on PAD locations.
-- Return log-probabilities with `log_softmax`:
-  - `p1`: start log-probs `[B, L]`
-  - `p2`: end log-probs `[B, L]`
+lambda uses warmup_lambda(t): inverse-exponential rise for t < 1000, then factor 1.0.
 
-## 7. Masking Semantics
+### Losses
 
-Mask convention is important and consistent:
-- `cmask = (Cwid == 0)` and `qmask = (Qwid == 0)`.
-- `True` means PAD / invalid position.
-- `mask_logits(...)` fills masked positions with `-1e30` before softmax.
+From Losses/loss.py:
 
-## 8. Training System Architecture
+- qa_nll
+  - Applies log_softmax internally, then NLL loss for start/end.
+- qa_ce
+  - Uses cross_entropy directly on raw logits.
 
-Public API: `TrainTools/train.py::train(...)`.
+### Normalizations
 
-### 8.1 Config and reproducibility
+From Models/Normalizations/normalization.py:
 
-- All function args are packed into an `argparse.Namespace` called `args`.
-- Seed is set via `set_seed(seed)` (Python, NumPy, torch, CUDA).
-- Full config is persisted to `_model/run_config.json`.
+- layer_norm
+- group_norm
 
-### 8.2 Dynamic component selection (registry-based)
+### Activations
 
-String keys select components at runtime:
-- Optimizers: `adam`, `sgd`, `sgd_momentum`
-- Schedulers: `cosine`, `step`, `lambda`, or `none`
-- Losses: `qa_nll`, `qa_ce`
-- Normalizations: `layer_norm`, `group_norm` (used by model construction)
+From Models/Activations/activation_function.py:
 
-Invalid keys raise explicit `ValueError` with available options.
+- relu
+- leaky_relu
 
-### 8.3 Main training loop
+### Initializations
 
-Loop is block-based by `checkpoint` steps:
-1. Run `train_single_epoch(...)` for the next block size.
-2. Evaluate sampled train batches and ordered dev batches.
-3. Track learning rate (`scheduler.get_last_lr()` if scheduler exists, else optimizer LR).
-4. Append metrics to `history`.
-5. Early-stop check (patience on both dev F1 and dev EM degrading).
-6. Save checkpoint every block.
-7. Save dev answers to `_log/answers.json`.
+From Models/Initializations/initialization.py:
 
-### 8.4 Per-step operations (`train_utils.py`)
+- kaiming
+- kaiming_normal
+- kaiming_uniform
+- xavier
+- xavier_normal
+- xavier_uniform
 
-For each batch:
-- zero grads,
-- forward pass,
-- compute span loss,
-- backward pass,
-- gradient clipping (`clip_grad_norm_`, default 5.0),
-- optimizer step,
-- scheduler step (if present).
+## 9. Training System Architecture
 
-### 8.5 Checkpoint payload
+Public API: TrainTools/train.py::train(...)
 
-Saved via `torch.save` with keys:
-- `model`
-- `optimizer_state`
-- `scheduler_state` (or `None`)
-- `step`
-- `best_f1`, `best_em`
-- `config`
+### Setup
 
-## 9. Evaluation System Architecture
+- set_seed(seed) for Python, NumPy, torch (and CUDA where available).
+- Full args persisted to _model/run_config.json.
+- Cache validated via sanity_check_cache.
+- Model/data/eval metadata loaded.
 
-Public API: `EvaluateTools/evaluate.py::evaluate(...)`.
+### Parameter Grouping
 
-1. Load embeddings and reconstruct QANet with architecture args.
-2. Load checkpoint and apply `model.load_state_dict(...)`.
-3. Run `run_eval(...)` over dev set (or limited batches).
-4. Save answer dict to `_log/answers.json`.
-5. Return metrics dict:
-   - `f1`
-   - `exact_match`
-   - `loss`
+Parameters are split into:
 
-### 9.1 Metric computation details
+- decay_params (weight decay applied)
+- no_decay_params (weight decay = 0) for:
+  - bias params
+  - normalization params (name contains "norm")
+  - 1D tensors
 
-`EvaluateTools/eval_utils.py`:
-- text normalization removes punctuation/articles/case differences,
-- computes exact match and token-level F1,
-- takes max score over all gold answers per question,
-- converts predicted start/end token indices back to text span via saved character spans.
+### Main Loop (Checkpoint Blocks)
 
-## 10. Optimizer, Scheduler, and Loss Implementations
+For each block of checkpoint steps:
 
-### 10.1 Optimizers
+1. train_single_epoch runs the step loop.
+2. If EMA enabled, shadow weights are applied for evaluation.
+3. run_eval on sampled train batches and ordered dev batches.
+4. EMA weights restored back to live model weights.
+5. History record appended with train/dev metrics + LR.
+6. Checkpoint saved only on improvement:
+   - better dev F1, or
+   - equal dev F1 and better dev EM.
+7. Early stopping based on consecutive non-improving blocks.
+8. _log/answers.json updated each eval block.
 
-- `Adam`: custom Adam with bias correction and optional L2-style weight decay.
-- `SGD`: vanilla SGD.
-- `SGDMomentum`: SGD with velocity buffer.
+Optional step diagnostics are saved to:
 
-All optimizer factories in `Optimizers/optimizer.py` use `args.learning_rate` as base LR.
+- _log/step_metrics_<optimizer>_<scheduler>_seed<seed>.json
+  - or custom step_metrics_file.
 
-### 10.2 Schedulers
+### Per-Step Behavior (train_utils.py)
 
-- `cosine`: cosine annealing to `eta_min` over `num_steps`.
-- `step`: multiplicative decay by `gamma` every `lr_step_size` steps.
-- `lambda`: warmup scheduler based on QANet-style inverse exponential ramp for first 1000 steps, then constant factor 1.0.
-- `none`: special value handled in `train.py` to disable scheduler entirely.
+- Optional linear warmup (for Adam path in train.py).
+- Gradient accumulation via accumulate_grad_steps.
+- Backprop on scaled micro-batch loss.
+- Gradient clipping with clip_grad_norm_.
+- optimizer.step().
+- scheduler.step() (outside warmup window).
+- EMA update (if enabled).
+- Optional metrics sampled every log_every_steps:
+  - loss, lr
+  - grad norm before/after clip
+  - conv grad norm
+  - CQ weight variance + grad norm
+  - NaN/Inf/non-finite gradient flags
 
-Effective LR formula with scheduler:
+## 10. Checkpoint Format
 
-`effective_lr_t = base_lr * scheduler_factor_t`
+Saved payload keys (train_utils.save_checkpoint):
 
-If `scheduler_name="none"`, LR is fixed at optimizer param group LR.
+- model
+- optimizer_state
+- scheduler_state
+- step
+- best_f1
+- best_em
+- config
+- ema_state
 
-### 10.3 Losses
+Notes:
 
-- `qa_nll`: expects log-probabilities (matches current pointer output because pointer uses `log_softmax`).
-- `qa_ce`: expects raw logits (not ideal unless pointer output is changed accordingly).
+- scheduler_state is None when scheduler is disabled.
+- ema_state is None when EMA is disabled.
 
-## 11. Shape and Interface Summary (Quick Reference)
+## 11. Evaluation System Architecture
 
-- Model input tensors:
-  - `Cwid`: `[B, Lc]`
-  - `Ccid`: `[B, Lc, char_limit]`
-  - `Qwid`: `[B, Lq]`
-  - `Qcid`: `[B, Lq, char_limit]`
-- Model output:
-  - `p1`, `p2`: `[B, Lc]` log-probabilities over start/end indices.
-- Gold labels:
-  - `y1`, `y2`: `[B]`.
+Public API: EvaluateTools/evaluate.py::evaluate(...)
 
-## 12. Configuration Parameters That Must Stay Consistent
+Flow:
 
-Training/evaluation architecture parameters must match checkpoint config:
-- `para_limit`, `ques_limit`, `char_limit`
-- `d_model`, `num_heads`
-- `glove_dim`, `char_dim`
-- `dropout`, `dropout_char`
-- `pretrained_char`
+1. Validate loss_name registry key.
+2. Load checkpoint with torch.load(..., weights_only=False).
+3. Read model state from:
+   - ckpt["model"], or fallback ckpt["model_state"].
+4. Infer key dims from state dict when available:
+   - d_model from conv.weight
+   - glove_dim from word_emb.weight
+   - char_dim from char_emb.weight
+5. Build args namespace where checkpoint config takes precedence.
+6. Rebuild QANet and load state_dict.
+7. Run run_eval over dev batches.
+8. Save predictions to _log/answers.json.
+9. Return dict: {f1, exact_match, loss}.
 
-If these differ between train and evaluate, checkpoint loading or behavior may break.
+## 12. Evaluation and Decoding Semantics
 
-## 13. Runtime Outputs and Files
+Implemented in EvaluateTools/eval_utils.py.
 
-Generated by training:
-- `_model/model.pt` (checkpoint)
-- `_model/run_config.json`
-- `_log/answers.json` (dev predictions from latest eval)
+- Model outputs raw start/end logits.
+- Loss computed via selected loss function.
+- decode_best_spans chooses span maximizing start+end score with constraints:
+  - start <= end
+  - span length <= max_answer_len
+- Predicted token spans converted back to answer text using stored context spans.
+- SQuAD metrics:
+  - normalization removes punctuation/articles/case differences
+  - EM and token-level F1
+  - max score over all gold answers per example
 
-Generated by evaluation:
-- `_log/answers.json` (overwritten with current run predictions)
+## 13. Runtime Artifacts
 
-Generated by preprocessing:
-- all cached `_data/*.npz` and `_data/*.json` listed earlier.
+Preprocessing:
 
-## 14. Extension Points for New Users/Agents
+- _data/train.npz
+- _data/dev.npz
+- _data/word_emb.json
+- _data/char_emb.json
+- _data/train_eval.json
+- _data/dev_eval.json
+- _data/word2idx.json
+- _data/char2idx.json
+- _data/dev_meta.json
 
-1. Swap optimizer/scheduler/loss by key (no train-loop rewrite needed).
-2. Add new registry entry in:
-   - `Optimizers/optimizer.py`,
-   - `Schedulers/scheduler.py`,
-   - `Losses/loss.py`,
-   - `Models/Normalizations/normalization.py`,
-   - `Models/Activations/activation_function.py`.
-3. Adjust model width/depth through `train()` args.
-4. Modify encoder internals in `Models/encoder.py`.
-5. Change answer head behavior in `Models/heads.py`.
+Training:
 
-## 15. Known Practical Notes
+- _model/model.pt
+- _model/run_config.json
+- _log/answers.json
+- _log/step_metrics_*.json (optional)
 
-- Scheduler can be disabled by setting `scheduler_name="none"`.
-- Pointer currently returns log-probs; `qa_nll` is the natural loss pairing.
-- Early stopping is conservative: patience increments only when both dev F1 and dev EM degrade.
-- Checkpoint serialization includes scheduler state; scheduler functions used by LambdaLR must be picklable module-level functions.
+Evaluation:
 
-## 16. Minimal Reproduction (Programmatic)
+- _log/answers.json (current eval predictions)
+
+## 14. Practical Notes and Caveats
+
+- evaluate() prioritizes checkpoint config over function defaults to reduce shape mismatch risks.
+- evaluate() uses weights_only=False because locally saved checkpoints may include scheduler lambda state.
+- Scheduler key "none" is supported at train API level (not part of schedulers registry map).
+- Early stopping counts non-improving checkpoint blocks, not individual steps.
+- Word embedding freezing is configurable via freeze_word (default True).
+- Character embedding freezing is controlled by pretrained_char.
+
+## 15. Minimal Programmatic Usage
 
 ```python
 from TrainTools.train import train
 from EvaluateTools.evaluate import evaluate
 
-results = train(
+train_results = train(
     num_steps=6000,
     batch_size=8,
     optimizer_name="adam",
@@ -378,10 +419,10 @@ results = train(
     learning_rate=1e-3,
 )
 
-metrics = evaluate(
+eval_metrics = evaluate(
     ckpt_name="model.pt",
     loss_name="qa_nll",
 )
 ```
 
-This uses the full architecture described above and produces best-dev training stats plus final dev metrics.
+This runs the same architecture and pipeline described above.
